@@ -1,0 +1,16 @@
+
+[server]
+headless = true
+
+[theme]
+primaryColor="#009999"
+backgroundColor="#F9FAFC"
+secondaryBackgroundColor="#FFFFFF"
+textColor="#262730"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showSidebarNavigation = true
