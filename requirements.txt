@@ -6,3 +6,5 @@ seaborn
 streamlit-aggrid
 joblib
 scipy
+xgboost
+lightgbm

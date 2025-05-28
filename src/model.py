@@ -15,6 +15,9 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_validate, StratifiedKFold
 from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import (
     accuracy_score,
     roc_auc_score,
@@ -22,6 +25,7 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
 )
+
 
 
 # ------------------------------------------------------------------
@@ -38,6 +42,8 @@ def _default_models():
         "RandomForest": RandomForestClassifier(),
         "SVM": SVC(probability=True),
         "KNN": KNeighborsClassifier(),
+        "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss'),
+        "LightGBM": LGBMClassifier()
     }
 
 
@@ -103,12 +109,24 @@ def compare_models_with_cv(
         row.update({metric: np.nanmean(val) for metric, val in scores.items()})
         results.append(row)
 
-    return pd.DataFrame(results)
+    
+    df_results = pd.DataFrame(results)
+    # Renommer les colonnes pour l'affichage
+    df_results.rename(columns={
+        "test_accuracy": "Accuracy",
+        "test_precision": "Precision",
+        "test_recall": "Recall",
+        "test_f1": "F1",
+        "test_roc_auc": "ROC AUC"
+    }, inplace=True)
+
+    return df_results
+
 
 # ------------------------------------------------------------------
 # 3. Sélection du meilleur pipeline
 # ------------------------------------------------------------------
-def select_best_model(cv_results: pd.DataFrame, metric: str = "test_roc_auc"):
+def select_best_model(cv_results: pd.DataFrame, metric: str = "ROC AUC"):
     """Retourne le pipeline associé à la meilleure valeur de `metric`."""
     idx = cv_results[metric].idxmax()
     return cv_results.loc[idx, "pipeline"]
@@ -139,3 +157,13 @@ def evaluate_model(model, X_test, y_test) -> pd.DataFrame:
         metrics["roc_auc"] = roc_auc_score(y_test, proba)
 
     return pd.DataFrame(metrics, index=["score"]).T
+
+
+# ------------------------------------------------------------------
+# 4. Optimiser les modèles (hyperparamètres)
+# ------------------------------------------------------------------
+def optimize_model(pipe, param_grid, X, y, cv=5):
+    grid = GridSearchCV(pipe, param_grid, cv=cv, scoring="accuracy", n_jobs=-1)
+    grid.fit(X, y)
+    return grid.best_estimator_, grid.best_params_
+
