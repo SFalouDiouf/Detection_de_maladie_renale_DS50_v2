@@ -191,7 +191,6 @@ if st.button("🚀 Lancer la comparaison de modèles"):
 
     st.plotly_chart(radar_fig, use_container_width=True)
 
-footer.render()
     st.success("Comparaison terminée")
 
     # ---------- RÉSULTATS ------------------------------
