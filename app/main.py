@@ -17,17 +17,24 @@ st.set_page_config(
 
 sidebar.render()
 
-st.title("Détection de la maladie rénale chronique (CKD)")
+st.title("🩺Détection de la maladie rénale chronique (CKD)")
 
 st.markdown(
     """
-    Bienvenue dans l'application !  
-    Utilisez le menu latéral pour naviguer entre les étapes :
+    Cette application interactive vous accompagne dans un projet de **détection de la maladie rénale chronique (Chronic Kidney Disease)** à l’aide de techniques de **Data Science et d’Intelligence Artificielle**.  
+    Elle s’appuie sur le jeu de données de [Kaggle](https://www.kaggle.com/datasets/mansoordaku/ckdisease) et a été développée dans le cadre de la formation **Promo DS50**.
 
-    1. **Exploration** – Chargement et exploration du jeu de données  
-    2. **Modélisation** – Entraînement et validation des modèles  
-    3. **Interprétation** – Résultats et interprétation
+    ### 🔍 Étapes disponibles dans le menu latéral :
+
+    1. **Exploration** – Chargement des données, visualisation, valeurs manquantes, outliers  
+    2. **Prétraitement** – Nettoyage des données, encodage, normalisation  
+    3. **Modélisation** – Entraînement et comparaison de modèles prédictifs  
+    4. **Interprétation** – Évaluation finale et visualisation des performances
+
+    ---
+    > *Objectif : Créer un pipeline complet, de l’importation des données à la prédiction fiable de la maladie.*
     """
 )
+
 
 footer.render()

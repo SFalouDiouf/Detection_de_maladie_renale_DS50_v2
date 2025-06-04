@@ -1,10 +1,20 @@
-
 import streamlit as st
 
 def render():
-    st.sidebar.title("CKD Detection – DS50")
+    # Titre et navigation
+    st.sidebar.title("CKD Detection – DS50")
     st.sidebar.caption("Navigation")
-    # La navigation multipage native Streamlit s'affiche déjà.
     st.sidebar.markdown("---")
 
-    st.sidebar.write("© Promo DS50 – 2025")
+    # Espace pour pousser le footer vers le bas
+    st.sidebar.markdown("<div style='height: 40vh;'></div>", unsafe_allow_html=True)
+
+    # Pied de page fixé
+    st.sidebar.markdown(
+        """
+        <div style='position: relative; bottom: 0; text-align: center; color: gray; font-size: 0.8rem;'>
+            © Promo DS50 – 2025
+        </div>
+        """,
+        unsafe_allow_html=True
+    )

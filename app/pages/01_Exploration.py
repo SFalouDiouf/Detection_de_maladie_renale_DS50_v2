@@ -33,12 +33,17 @@ with st.expander("📂 Importer un CSV", expanded=True):
 
 if csv is not None:
     st.session_state["uploaded_csv"] = csv
+    df = pd.read_csv(csv)
+    st.session_state["uploaded_df"] = df  # ✅ stocker le DataFrame
 elif "uploaded_csv" in st.session_state:
     csv = st.session_state["uploaded_csv"]
+    df = pd.read_csv(csv)
+    st.session_state["uploaded_df"] = df  # ✅ pour le cas de rechargement
 else:
     st.info("Veuillez importer un fichier pour commencer.")
     footer.render()
     st.stop()
+
 
 # ╭──────────────────────────────────────────╮
 # │ 2. LOAD & CLEAN (cache)                  │
