@@ -8,3 +8,4 @@ joblib
 scipy
 xgboost
 lightgbm
+shap

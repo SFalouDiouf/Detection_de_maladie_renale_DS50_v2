@@ -3,134 +3,118 @@ import pandas as pd
 import numpy as np
 import time
 
-st.set_page_config(page_title="Prétraitement", layout="wide")
-st.title("🧹 Prétraitement des Données")
+st.set_page_config(page_title="Pipeline de Prétraitement", layout="wide")
+st.title("🧼 Pipeline de Prétraitement des Données")
 
-# --- Initialisation des flags dans session_state ---
-if "step_1_done" not in st.session_state:
-    st.session_state.step_1_done = False
-if "step_2_done" not in st.session_state:
-    st.session_state.step_2_done = False
-if "cleaned_df" not in st.session_state:
-    st.session_state.cleaned_df = None
-if "final_df" not in st.session_state:
-    st.session_state.final_df = None
-
-# --- Chargement des données uploadées ---
+# === INIT
 if 'uploaded_df' not in st.session_state:
-    st.warning("📁 Veuillez d'abord charger les données dans la page d'accueil.")
+    st.warning("Veuillez d'abord charger un fichier dans la page principale.")
     st.stop()
 
 df = st.session_state.uploaded_df.copy()
 
-# === Fonctions de nettoyage ===
-def clean_wc_rc(df):
-    for col in ['wc', 'rc']:
-        if col in df.columns:
-            df[col] = df[col].replace(['?', 'normal'], np.nan)
+if "id" in df.columns:
+    df.drop(columns=["id"], inplace=True)
+
+df["classification"] = df["classification"].astype(str).str.strip().str.lower()
+
+
+# === Step 1: Résumé des valeurs manquantes
+st.header("🧩 Étape 1 : Résumé des valeurs manquantes")
+if st.button("Afficher le résumé des valeurs manquantes"):
+    missing_df = pd.DataFrame(df.isnull().sum(), columns=["Total NA"])
+    missing_df["% NA"] = (df.isnull().mean() * 100).round(1)
+    missing_df = missing_df[missing_df["Total NA"] > 0].sort_values("% NA", ascending=False)
+    st.dataframe(missing_df)
+    st.session_state.missing_df = missing_df
+
+# === Step 2: Imputation des valeurs manquantes
+st.header("🛠️ Étape 2 : Imputation des valeurs manquantes")
+
+def impute_missing(df):
+    df = df.copy()
+
+    # 🔁 Replace all '?' with NaN (in all columns, not just object types)
+    df.replace("?", np.nan, inplace=True)
+
+    # 🔍 Calculate missing value percentage per column
+    missing_pct = df.isnull().mean() * 100
+    low_missing_cols = missing_pct[missing_pct < 5].index.tolist()
+    high_missing_cols = missing_pct[missing_pct >= 5].index.tolist()
+
+    
+
+    # ✅ Treat low-missing columns
+    for col in low_missing_cols:
+        if df[col].dtype in ("float64", "int64", "int32"):
             df[col] = pd.to_numeric(df[col], errors='coerce')
             df[col].fillna(df[col].median(), inplace=True)
-    return df
-
-def impute_missing_values(df):
-    df = df.copy()
-    if 'age' in df.columns:
-        df['age'] = pd.to_numeric(df['age'], errors='coerce')
-        df['age'].fillna(df['age'].median(), inplace=True)
-
-    numeric_mean_cols = ['bp', 'bgr', 'bu', 'sc', 'sod', 'pot', 'hemo', 'pcv']
-    for col in numeric_mean_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-        df[col].fillna(df[col].mean(), inplace=True)
-
-    df = clean_wc_rc(df)
-
-    categorical_mode_cols = ['sg', 'al', 'su', 'pcc', 'ba']
-    for col in categorical_mode_cols:
-        df[col].fillna(df[col].mode()[0], inplace=True)
-
-    for col in ['dm', 'cad', 'htn', 'appet', 'pe', 'ane']:
-        df[col] = df[col].replace('?', np.nan)
-        df[col].fillna(df[col].mode()[0], inplace=True)
-
-    for col in ['rbc', 'pc']:
-        df[col].fillna('unknown', inplace=True)
-
-    return df
-
-def full_preprocessing(df):
-    df = df.copy()
-
-    numeric_cols = df.select_dtypes(include=['int', 'float']).columns
-    for col in numeric_cols:
-        q1 = df[col].quantile(0.25)
-        q3 = df[col].quantile(0.75)
-        iqr = q3 - q1
-        lower = q1 - 1.5 * iqr
-        upper = q3 + 1.5 * iqr
-        median = df[col].median()
-        df[col] = np.where((df[col] < lower) | (df[col] > upper), median, df[col])
-
-    label_encoding = {
-        'normal': 0, 'abnormal': 1,
-        'yes': 1, 'no': 0,
-        'present': 1, 'notpresent': 0,
-        'good': 1, 'poor': 0,
-        'unknown': -1
-    }
-
-    for col in df.select_dtypes(include=['object']).columns:
-        df[col] = df[col].map(label_encoding).fillna(df[col])
-
-    df = pd.get_dummies(df, drop_first=True)
-
-    return df
-
-# --- Bouton Étape 1 ---
-st.subheader("Étape 1 – Gestion des valeurs manquantes")
-if st.button("🚀 Start Cleaning") or st.session_state.step_1_done:
-    if not st.session_state.step_1_done:
-        cleaned_df = impute_missing_values(df)
-        st.session_state.cleaned_df = cleaned_df
-        st.session_state.step_1_done = True
-    else:
-        cleaned_df = st.session_state.cleaned_df
-
-    st.success("✅ Valeurs manquantes remplies.")
-    st.dataframe(cleaned_df.isnull().sum().to_frame("Valeurs manquantes"))
-
-# --- Bouton Étape 2 ---
-if st.session_state.step_1_done:
-    st.subheader("Étape 2 – Nettoyage complet et encodage")
-
-    if st.button("▶️ Continuer le Prétraitement") or st.session_state.step_2_done:
-        if not st.session_state.step_2_done:
-            progress_bar = st.progress(0)
-            status = st.empty()
-
-            time.sleep(0.5)
-            status.info("🔍 Nettoyage des outliers...")
-            progress_bar.progress(25)
-
-            time.sleep(0.5)
-            df2 = st.session_state.cleaned_df.copy()
-            final_df = full_preprocessing(df2)
-            progress_bar.progress(75)
-
-            time.sleep(0.5)
-            status.success("✅ Encodage terminé.")
-            progress_bar.progress(100)
-
-            st.session_state.final_df = final_df
-            st.session_state.step_2_done = True
         else:
-            final_df = st.session_state.final_df
+            df[col].fillna(df[col].mode()[0], inplace=True)
 
-        st.success("🎉 Prétraitement terminé :")
-        st.markdown("- Outliers remplacés par la médiane")
-        st.markdown("- Encodage (Label + One-Hot) appliqué")
-        st.dataframe(final_df.head())
+    # ⚠️ For high-missing columns:
+    for col in high_missing_cols:
+        if df[col].dtype in ("float64", "int64", "int32"):
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col].fillna(df[col].median(), inplace=True)
+        else:
+            df[col].fillna(df[col].mode()[0], inplace=True)
+       
 
-        # --- Bouton téléchargement ---
-        csv = final_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Télécharger les données nettoyées", data=csv, file_name="donnees_nettoyees.csv", mime="text/csv")
+    # ✅ Normalize target column again if needed
+    if "classification" in df.columns:
+        df["classification"] = df["classification"].astype(str).str.strip().str.lower()
+
+    return df
+
+
+
+if st.button("Imputer les valeurs manquantes"):
+    df_imputed = impute_missing(df)
+    st.session_state.df_imputed = df_imputed
+    st.success("✅ Valeurs manquantes imputées.")
+    
+
+# === Résumé visuel après imputation ===
+if "df_imputed" in st.session_state:
+    df_clean = st.session_state.df_imputed
+    st.header("✅ Jeu de données prêt")
+
+    st.success("Toutes les valeurs manquantes ont été traitées. Le jeu de données est propre et prêt à être utilisé pour la modélisation.")
+
+    # 1. Vérification visuelle des NA
+    na_summary = df_clean.isnull().sum()
+    
+
+    # 2. Shape + types
+    st.subheader("📋 Aperçu global")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Nombre de lignes", f"{df_clean.shape[0]}")
+    col2.metric("Nombre de colonnes", f"{df_clean.shape[1]}")
+    col3.metric("Valeurs manquantes", f"{int(na_summary.sum())}")
+
+    # 3. Répartition de la variable cible
+    if "classification" in df_clean.columns:
+        st.subheader("🎯 Répartition de la variable cible (classification)")
+        st.dataframe(df_clean["classification"].value_counts().to_frame("Count"))
+        st.bar_chart(df_clean["classification"].value_counts())
+
+    # 4. Aperçu des 10 premières lignes
+    st.subheader("🔍 Aperçu des données nettoyées")
+    st.dataframe(df_clean.head())
+
+# ✅ Télécharger uniquement si l'imputation a été faite
+if "df_imputed" in st.session_state:
+    df_clean = st.session_state.df_imputed  # <- define df_clean
+    st.session_state.cleaned_df = df_clean  # <- store cleaned df for other pages
+
+    csv = df_clean.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        "📥 Télécharger les données nettoyées",
+        data=csv,
+        file_name="donnees_nettoyees.csv",
+        mime="text/csv"
+    )
+
+
+
