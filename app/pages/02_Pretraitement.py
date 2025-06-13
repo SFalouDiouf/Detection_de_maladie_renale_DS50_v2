@@ -19,14 +19,18 @@ if "id" in df.columns:
 df["classification"] = df["classification"].astype(str).str.strip().str.lower()
 
 
-# === Step 1: Résumé des valeurs manquantes
+# === Step 1: Résumé des valeurs manquantes (affiché automatiquement)
 st.header("🧩 Étape 1 : Résumé des valeurs manquantes")
-if st.button("Afficher le résumé des valeurs manquantes"):
-    missing_df = pd.DataFrame(df.isnull().sum(), columns=["Total NA"])
-    missing_df["% NA"] = (df.isnull().mean() * 100).round(1)
-    missing_df = missing_df[missing_df["Total NA"] > 0].sort_values("% NA", ascending=False)
+
+missing_df = pd.DataFrame(df.isnull().sum(), columns=["Total NA"])
+missing_df["% NA"] = (df.isnull().mean() * 100).round(1)
+missing_df = missing_df[missing_df["Total NA"] > 0].sort_values("% NA", ascending=False)
+
+if not missing_df.empty:
     st.dataframe(missing_df)
     st.session_state.missing_df = missing_df
+else:
+    st.success("✅ Aucune valeur manquante détectée dans le jeu de données.")
 
 # === Step 2: Imputation des valeurs manquantes
 st.header("🛠️ Étape 2 : Imputation des valeurs manquantes")
@@ -34,38 +38,57 @@ st.header("🛠️ Étape 2 : Imputation des valeurs manquantes")
 def impute_missing(df):
     df = df.copy()
 
-    # 🔁 Replace all '?' with NaN (in all columns, not just object types)
+    # 🔁 Step 1: Replace all '?' with NaN
     df.replace("?", np.nan, inplace=True)
 
-    # 🔍 Calculate missing value percentage per column
+    # 🔧 Step 2: Force correct data types for numeric columns
+    numeric_cols = ['age', 'bp', 'bgr', 'bu', 'sc', 'sod', 'pot', 'hemo', 'pcv', 'wc', 'rc']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 🧹 Step 3: Normalize binary categorical columns (yes/no)
+    binary_cols = ['rbc', 'pc', 'pcc', 'ba', 'htn', 'dm', 'cad', 'appet', 'pe', 'ane']
+    for col in binary_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip().str.lower().replace({
+                'yes': 1, 'no': 0, 'present': 1, 'notpresent': 0,
+                'abnormal': 1, 'normal': 0, 'good': 1, 'poor': 0,
+                'nan': np.nan  # keep actual missing values as NaN
+            })
+
+    # 🧩 Step 4: Split into low and high missing columns
     missing_pct = df.isnull().mean() * 100
     low_missing_cols = missing_pct[missing_pct < 5].index.tolist()
     high_missing_cols = missing_pct[missing_pct >= 5].index.tolist()
 
-    
-
-    # ✅ Treat low-missing columns
+    # ✅ Step 5: Impute low-missing columns
     for col in low_missing_cols:
-        if df[col].dtype in ("float64", "int64", "int32"):
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        if df[col].dtype in [np.float64, np.int64]:
             df[col].fillna(df[col].median(), inplace=True)
         else:
             df[col].fillna(df[col].mode()[0], inplace=True)
 
-    # ⚠️ For high-missing columns:
+    # ⚠️ Step 6: Handle high-missing columns
     for col in high_missing_cols:
-        if df[col].dtype in ("float64", "int64", "int32"):
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        if df[col].dtype in [np.float64, np.int64]:
             df[col].fillna(df[col].median(), inplace=True)
         else:
-            df[col].fillna(df[col].mode()[0], inplace=True)
-       
+            # Instead of mode (can bias), mark as a new category
+            df[col] = df[col].astype(str).str.strip().str.lower()
+            df[col].fillna("missing", inplace=True)
 
-    # ✅ Normalize target column again if needed
+    # 🎯 Step 7: Clean target column
     if "classification" in df.columns:
         df["classification"] = df["classification"].astype(str).str.strip().str.lower()
+        df["classification"] = df["classification"].replace({
+            'ckd': 1,
+            'notckd': 0,
+            'ckd\t': 1,  # cleaning noise
+        })
 
     return df
+
 
 
 
@@ -96,8 +119,11 @@ if "df_imputed" in st.session_state:
     # 3. Répartition de la variable cible
     if "classification" in df_clean.columns:
         st.subheader("🎯 Répartition de la variable cible (classification)")
-        st.dataframe(df_clean["classification"].value_counts().to_frame("Count"))
-        st.bar_chart(df_clean["classification"].value_counts())
+        # Créer une copie pour l'affichage uniquement
+        target_display = df_clean["classification"].replace({1: "Malade", 0: "Sain"})
+        # Afficher un tableau lisible
+        st.dataframe(target_display.value_counts().to_frame("Nombre de patients"))
+
 
     # 4. Aperçu des 10 premières lignes
     st.subheader("🔍 Aperçu des données nettoyées")
