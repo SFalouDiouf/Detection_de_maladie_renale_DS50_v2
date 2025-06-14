@@ -1,146 +1,189 @@
+# ─────────────────────────────────────────────
+# 02_Pretraitement.py – pipeline robuste + UI explicative
+# ─────────────────────────────────────────────
 import streamlit as st
-import pandas as pd
-import numpy as np
-import time
+import pandas as pd, numpy as np
+from sklearn.impute import SimpleImputer, KNNImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.base import BaseEstimator, TransformerMixin
 
-st.set_page_config(page_title="Pipeline de Prétraitement", layout="wide")
-st.title("🧼 Pipeline de Prétraitement des Données")
+# ╭────────── CONFIG STREAMLIT ──────────╮
+st.set_page_config(page_title="🧼 Pré-traitement", page_icon="🧹", layout="wide")
+st.title("🧹 Pipeline de Pré-traitement des Données")
 
-# === INIT
-if 'uploaded_df' not in st.session_state:
-    st.warning("Veuillez d'abord charger un fichier dans la page principale.")
+# ╭────────── CHARGEMENT DF ──────────╮
+if "uploaded_df" not in st.session_state:
+    st.warning("Importez d’abord le CSV dans la page « Exploration ». 🚩")
     st.stop()
 
-df = st.session_state.uploaded_df.copy()
+df_raw = st.session_state.uploaded_df.copy()
+if "id" in df_raw.columns:
+    df_raw.drop(columns=["id"], inplace=True)
 
-if "id" in df.columns:
-    df.drop(columns=["id"], inplace=True)
+df_raw["classification"] = (
+    df_raw["classification"].astype(str).str.strip().str.lower()
+)
 
-df["classification"] = df["classification"].astype(str).str.strip().str.lower()
+# ╭────────── TRANSFORMER : strip "," ──────────╮
+class StripThousands(BaseEstimator, TransformerMixin):
+    """Supprime la virgule des milliers et convertit en float."""
+    def fit(self, X, y=None): return self
+    def transform(self, X):
+        return pd.DataFrame(
+            X.astype(str).str.replace(",", "", regex=False).astype(float),
+            columns=X.columns,
+            index=X.index,
+        )
 
+# ╭────────── EXPANDER 1 : DIAGNOSTIC NA ──────────╮
+with st.expander("🔍 Étape 1 – Diagnostic des valeurs manquantes", expanded=True):
+    miss = (
+        df_raw.isna().sum()
+        .loc[lambda s: s > 0]
+        .to_frame("Total NA")
+        .assign(**{"% NA": lambda d: (d["Total NA"] / len(df_raw) * 100).round(1)})
+        .sort_values("% NA", ascending=False)
+    )
+    if miss.empty:
+        st.success("✅ Aucune valeur manquante.")
+    else:
+        st.dataframe(miss)
+        st.markdown(
+            "*Règle :* ≤ 5 % ⇒ imputation simple • > 5 % ⇒ imputation KNN (num) "
+            "ou catégorie « missing » (cat)."
+        )
 
-# === Step 1: Résumé des valeurs manquantes (affiché automatiquement)
-st.header("🧩 Étape 1 : Résumé des valeurs manquantes")
+# ╭────────── FONCTION D’IMPUTATION ──────────╮
+def impute_df(raw: pd.DataFrame) -> pd.DataFrame:
+    df = raw.copy()
 
-missing_df = pd.DataFrame(df.isnull().sum(), columns=["Total NA"])
-missing_df["% NA"] = (df.isnull().mean() * 100).round(1)
-missing_df = missing_df[missing_df["Total NA"] > 0].sort_values("% NA", ascending=False)
-
-if not missing_df.empty:
-    st.dataframe(missing_df)
-    st.session_state.missing_df = missing_df
-else:
-    st.success("✅ Aucune valeur manquante détectée dans le jeu de données.")
-
-# === Step 2: Imputation des valeurs manquantes
-st.header("🛠️ Étape 2 : Imputation des valeurs manquantes")
-
-def impute_missing(df):
-    df = df.copy()
-
-    # 🔁 Step 1: Replace all '?' with NaN
+    # 1) “?” → NaN
     df.replace("?", np.nan, inplace=True)
 
-    # 🔧 Step 2: Force correct data types for numeric columns
-    numeric_cols = ['age', 'bp', 'bgr', 'bu', 'sc', 'sod', 'pot', 'hemo', 'pcv', 'wc', 'rc']
-    for col in numeric_cols:
+    # 2) Conversion des colonnes numériques (virgules milliers)
+    if "wc" in df.columns:
+        df["wc"] = df["wc"].astype(str).str.replace(",", "").replace("nan", np.nan)
+
+    numeric_force = ["age", "bp", "bgr", "bu", "sc", "sod", "pot",
+                     "hemo", "pcv", "wc", "rc"]
+    for col in numeric_force:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 🧹 Step 3: Normalize binary categorical columns (yes/no)
-    binary_cols = ['rbc', 'pc', 'pcc', 'ba', 'htn', 'dm', 'cad', 'appet', 'pe', 'ane']
-    for col in binary_cols:
+    # 3) Binarisation explicite
+    mapping = {"yes": 1, "no": 0,
+               "present": 1, "notpresent": 0,
+               "abnormal": 1, "normal": 0,
+               "good": 1, "poor": 0}
+    bin_cols = ["rbc", "pc", "pcc", "ba", "htn", "dm",
+                "cad", "appet", "pe", "ane"]
+    for col in bin_cols:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.strip().str.lower().replace({
-                'yes': 1, 'no': 0, 'present': 1, 'notpresent': 0,
-                'abnormal': 1, 'normal': 0, 'good': 1, 'poor': 0,
-                'nan': np.nan  # keep actual missing values as NaN
-            })
+            df[col] = (df[col].astype(str)
+                              .str.strip()
+                              .str.lower()
+                              .map(mapping)
+                              .replace("nan", np.nan))
 
-    # 🧩 Step 4: Split into low and high missing columns
-    missing_pct = df.isnull().mean() * 100
-    low_missing_cols = missing_pct[missing_pct < 5].index.tolist()
-    high_missing_cols = missing_pct[missing_pct >= 5].index.tolist()
+    # 4) Imputation
+    na_pct = df.isna().mean() * 100
+    low_na  = [c for c in df.columns if na_pct[c] <= 5]
+    high_na = [c for c in df.columns if na_pct[c] > 5]
 
-    # ✅ Step 5: Impute low-missing columns
-    for col in low_missing_cols:
-        if df[col].dtype in [np.float64, np.int64]:
-            df[col].fillna(df[col].median(), inplace=True)
+    for c in low_na:
+        if df[c].dtype.kind in "fi":
+            df[c].fillna(df[c].median(), inplace=True)
         else:
-            df[col].fillna(df[col].mode()[0], inplace=True)
+            df[c].fillna(df[c].mode().iloc[0], inplace=True)
 
-    # ⚠️ Step 6: Handle high-missing columns
-    for col in high_missing_cols:
-        if df[col].dtype in [np.float64, np.int64]:
-            df[col].fillna(df[col].median(), inplace=True)
-        else:
-            # Instead of mode (can bias), mark as a new category
-            df[col] = df[col].astype(str).str.strip().str.lower()
-            df[col].fillna("missing", inplace=True)
+    num_high = [c for c in high_na if df[c].dtype.kind in "fi"]
+    cat_high = [c for c in high_na if c not in num_high]
 
-    # 🎯 Step 7: Clean target column
-    if "classification" in df.columns:
-        df["classification"] = df["classification"].astype(str).str.strip().str.lower()
-        df["classification"] = df["classification"].replace({
-            'ckd': 1,
-            'notckd': 0,
-            'ckd\t': 1,  # cleaning noise
-        })
+    if num_high:
+        df[num_high] = KNNImputer(n_neighbors=3).fit_transform(df[num_high])
+    for c in cat_high:
+        df[c] = df[c].fillna("missing")
 
+    # 5) Cible binaire
+    df["classification"] = df["classification"].replace(
+        {"ckd": 1, "ckd\t": 1, "notckd": 0}
+    )
     return df
 
-
-
-
-if st.button("Imputer les valeurs manquantes"):
-    df_imputed = impute_missing(df)
-    st.session_state.df_imputed = df_imputed
-    st.success("✅ Valeurs manquantes imputées.")
-    
-
-# === Résumé visuel après imputation ===
-if "df_imputed" in st.session_state:
-    df_clean = st.session_state.df_imputed
-    st.header("✅ Jeu de données prêt")
-
-    st.success("Toutes les valeurs manquantes ont été traitées. Le jeu de données est propre et prêt à être utilisé pour la modélisation.")
-
-    # 1. Vérification visuelle des NA
-    na_summary = df_clean.isnull().sum()
-    
-
-    # 2. Shape + types
-    st.subheader("📋 Aperçu global")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Nombre de lignes", f"{df_clean.shape[0]}")
-    col2.metric("Nombre de colonnes", f"{df_clean.shape[1]}")
-    col3.metric("Valeurs manquantes", f"{int(na_summary.sum())}")
-
-    # 3. Répartition de la variable cible
-    if "classification" in df_clean.columns:
-        st.subheader("🎯 Répartition de la variable cible (classification)")
-        # Créer une copie pour l'affichage uniquement
-        target_display = df_clean["classification"].replace({1: "Malade", 0: "Sain"})
-        # Afficher un tableau lisible
-        st.dataframe(target_display.value_counts().to_frame("Nombre de patients"))
-
-
-    # 4. Aperçu des 10 premières lignes
-    st.subheader("🔍 Aperçu des données nettoyées")
-    st.dataframe(df_clean.head())
-
-# ✅ Télécharger uniquement si l'imputation a été faite
-if "df_imputed" in st.session_state:
-    df_clean = st.session_state.df_imputed  # <- define df_clean
-    st.session_state.cleaned_df = df_clean  # <- store cleaned df for other pages
-
-    csv = df_clean.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        "📥 Télécharger les données nettoyées",
-        data=csv,
-        file_name="donnees_nettoyees.csv",
-        mime="text/csv"
+# ╭────────── EXPANDER 2 : IMPUTATION ──────────╮
+with st.expander("🛠️ Étape 2 – Nettoyage & imputation", expanded=False):
+    st.markdown(
+        """
+        *Actions :*  
+        1. Normaliser les valeurs binaires, supprimer les virgules milliers  
+        2. Appliquer la stratégie d’imputation définie à l’étape 1  
+        """
     )
+    if st.button("🔁 Lancer l’imputation"):
+        df_imp = impute_df(df_raw)
+        st.session_state.df_imputed = df_imp
+        st.success("Imputation terminée ✅")
+        st.dataframe(df_imp.head())
 
+# ╭────────── EXPANDER 3 : PIPELINE ──────────╮
+with st.expander("⚙️ Étape 3 – Construction du pipeline Scaler + OHE", expanded=False):
+    if "df_imputed" not in st.session_state:
+        st.info("Veuillez d’abord lancer l’imputation.")
+    else:
+        df_imp = st.session_state.df_imputed
+        num_cols = df_imp.select_dtypes(include="number").columns.tolist()
+        cat_cols = (df_imp.select_dtypes(exclude="number")
+                          .drop(columns=["classification"], errors="ignore")
+                          .columns.tolist())
 
+        num_pipe = Pipeline([
+            ("strip",   StripThousands()),
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler",  StandardScaler())
+        ])
+        try:
+            ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+        except TypeError:
+            ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
 
+        prep_pipeline = ColumnTransformer([
+            ("num", num_pipe, num_cols),
+            ("cat", ohe,      cat_cols)
+        ])
+        st.session_state.prep_pipeline = prep_pipeline
+        st.success("📦 prep_pipeline enregistré dans la session.")
+        st.markdown(
+            "*Pourquoi ?* → garantir un pré-traitement identique en "
+            "validation croisée **et** en production."
+        )
+
+# ╭────────── EXPANDER 4 : RÉCAP ──────────╮
+with st.expander("✅ Étape 4 – Récapitulatif & stockage", expanded=False):
+    if "df_imputed" in st.session_state:
+        df_imp = st.session_state.df_imputed
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Lignes", df_imp.shape[0])
+        col2.metric("Colonnes", df_imp.shape[1])
+        col3.metric("NA restantes", int(df_imp.isna().sum().sum()))
+        st.dataframe(df_imp.head())
+
+        # Stockage pour les autres pages
+        st.session_state.cleaned_df = df_imp
+
+        # ─── Bouton de téléchargement ───────────────────────────
+        csv = df_imp.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Télécharger les données nettoyées",
+            data=csv,
+            file_name="donnees_nettoyees.csv",
+            mime="text/csv"
+        )
+
+        st.success(
+            "Les données nettoyées **et** le pipeline sont prêts pour la page "
+            "« Modélisation ». Tout est conservé en mémoire."
+        )
+    else:
+        st.info("Terminez les étapes précédentes pour accéder au résumé.")

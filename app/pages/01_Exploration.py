@@ -1,51 +1,56 @@
 # ─────────────────────────────────────────────
 # 01_Exploration.py  –  Tableau de bord EDA
 # ─────────────────────────────────────────────
-import sys, pathlib
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+import sys, pathlib, io, warnings
+ROOT = pathlib.Path(__file__).resolve().parents[2]          # racine du repo
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st
 import seaborn as sns
 import matplotlib.pyplot as plt
+import pandas as pd, numpy as np
+import plotly.express as px, plotly.graph_objs as go
+from plotly.subplots import make_subplots
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from st_aggrid import AgGrid, GridOptionsBuilder
 from app.components import sidebar, footer
 from src import data
 
-import pandas as pd, numpy as np, plotly.express as px
-import plotly.graph_objs as go
-from plotly.subplots import make_subplots
-from scipy.stats import gaussian_kde
-import seaborn as sns, matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from st_aggrid import AgGrid, GridOptionsBuilder
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-# ─── CONFIG Streamlit (doit être le 1er appel) ─────────────────
+# ─── CONFIG Streamlit ─────────────────────────────────────────
 st.set_page_config(page_title="Exploration des données",
                    page_icon="🔍", layout="wide")
 
 sidebar.render()
 st.title("Étape 1 – Exploration des données")
 
+# Palette commune (réutilisée dans tous les graphiques)
+COLORS = {"ckd": "#1f77b4", "notckd": "#ff7f0e"}
+
 # ╭──────────────────────────────────────────╮
-# │ 1. UPLOAD  (persistant)                  │
+# │ 1. UPLOAD persistante                    │
 # ╰──────────────────────────────────────────╯
 with st.expander("📂 Importer un CSV", expanded=True):
     csv = st.file_uploader("Jeu de données au format CSV", type=["csv"])
 
 if csv is not None:
+    csv.seek(0)                                   # ← reset curseur
     st.session_state["uploaded_csv"] = csv
-    df = pd.read_csv(csv)
-    st.session_state["uploaded_df"] = df  # ✅ stocker le DataFrame
+    df_file = pd.read_csv(csv)
+    st.session_state["uploaded_df"] = df_file
 elif "uploaded_csv" in st.session_state:
     csv = st.session_state["uploaded_csv"]
-    df = pd.read_csv(csv)
-    st.session_state["uploaded_df"] = df  # ✅ pour le cas de rechargement
+    csv.seek(0)                                   # ← reset curseur
+    df_file = pd.read_csv(csv)
+    st.session_state["uploaded_df"] = df_file
 else:
     st.info("Veuillez importer un fichier pour commencer.")
     footer.render()
     st.stop()
-
 
 # ╭──────────────────────────────────────────╮
 # │ 2. LOAD & CLEAN (cache)                  │
@@ -57,285 +62,214 @@ def load_and_clean(file):
     return raw, clean
 
 raw_df, df = load_and_clean(csv)
-st.session_state["clean_df"] = df
+
+# Normaliser la cible + convertir les colonnes numériques “texte”
+if "classification" in df.columns:
+    df["classification"] = (
+        df["classification"].astype(str).str.strip().str.lower()
+        .replace({"ckd": "ckd", "notckd": "notckd"})
+    )
+for col in ["pcv", "wc", "rc"]:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+st.session_state["clean_df"] = df          # pour les pages suivantes
+st.session_state["uploaded_df"] = df       # sauvegarde redondante
 
 rows, cols = df.shape
-st.success(f"✅  Données chargées : {rows:,} lignes × {cols} colonnes")
+st.success(f"✅ Données chargées : {rows:,} lignes × {cols} colonnes")
 
 # ╭──────────────────────────────────────────╮
-# │ 3. KPI                                   │
+# │ 3. KPI header                            │
 # ╰──────────────────────────────────────────╯
-k1, k2, k3 = st.columns(3)
+dupes = df.duplicated().sum()
+k1, k2, k3, k4 = st.columns(4)
 k1.metric("Lignes", f"{rows:,}")
 k2.metric("Colonnes", f"{cols}")
-k3.metric("% de NA", f"{round(raw_df.isna().mean().mean()*100,2)} %")
+k3.metric("% de NA", f"{raw_df.isna().mean().mean()*100:.2f}")
+k4.metric("Duplicats", f"{dupes}")
 st.divider()
 
 # ╭──────────────────────────────────────────╮
-# │ 3B. Basic Information                    │
+# │ 3B. Infos de base                        │
 # ╰──────────────────────────────────────────╯
-st.subheader("🧾 Informations de base sur les données")
+st.subheader("🧾 Informations de base")
 
-with st.expander("👁️‍🗨️ Aperçu brut (df.head)", expanded=False):
+with st.expander("👁️‍🗨️ Aperçu (df.head)"):
     st.dataframe(df.head())
 
-import io
+with st.expander("ℹ️ df.info()"):
+    buf = io.StringIO()
+    df.info(buf=buf)
+    st.code(buf.getvalue(), language="text")
 
-with st.expander("ℹ️ Informations sur le DataFrame (.info)", expanded=False):
-    buffer = io.StringIO()
-    df.info(buf=buffer)
-    info_str = buffer.getvalue()
-    st.code(info_str, language="text")
+with st.expander("📊 Statistiques descriptives (.describe)"):
+    st.dataframe(df.describe(include="all").T)
 
-
-with st.expander("📊 Statistiques descriptives (.describe)", expanded=False):
-    st.dataframe(df.describe(include='all').transpose())
-
-
-
-with st.expander("🎯 Répartition de la variable cible", expanded=False):
-    if 'classification' in df.columns:
-        df['classification'] = df['classification'].str.strip().str.lower()
-        counts = df['classification'].value_counts()
-        percents = df['classification'].value_counts(normalize=True) * 100
-        st.write("**Valeurs :**")
-        st.write(counts)
-        st.write("**Pourcentages :**")
-        st.write(percents.round(2))
-
-        fig_target = px.bar(
-            x=counts.index,
-            y=counts.values,
-            labels={'x': 'Classe', 'y': 'Nombre'},
-            title="Distribution de la variable cible",
-            color=counts.index,  # Use class as color key
-            color_discrete_map={"ckd": "#1f77b4", "notckd": "#ff7f0e"}  # assign distinct colors
+with st.expander("🎯 Répartition de la variable cible"):
+    if "classification" in df.columns:
+        counts = df["classification"].value_counts()
+        percents = counts / counts.sum() * 100
+        st.write(counts.to_frame("n"))
+        st.write(percents.round(2).to_frame("%"))
+        st.plotly_chart(
+            px.bar(x=counts.index, y=counts.values,
+                   labels={"x": "Classe", "y": "Nombre"},
+                   color=counts.index, color_discrete_map=COLORS,
+                   title="Distribution de la variable cible"),
+            use_container_width=True
         )
-        st.plotly_chart(fig_target, use_container_width=True)
     else:
-        st.warning("⚠️ Colonne 'classification' introuvable.")
+        st.warning("Colonne 'classification' introuvable.")
 
-with st.expander("🔍 Doublons", expanded=False):
-    dupes = df.duplicated().sum()
+with st.expander("🔍 Doublons"):
     st.write(f"Nombre de lignes dupliquées : **{dupes}**")
 
 if "id" in df.columns:
     df.drop(columns=["id"], inplace=True)
 
-#4-G Pairplots 
-with st.expander("🔍 Analyse croisée avec PairPlot (Seaborn)", expanded=False):
-    st.markdown("Ce graphique montre les relations entre certaines variables en fonction du statut CKD.")
-
-    # Select a manageable subset of features to plot
-    selected_features = ['age', 'bp', 'sc', 'hemo', 'bgr', 'classification']
-
-    if all(col in df.columns for col in selected_features):
-        plot_df = df[selected_features].copy()
-        plot_df["classification"] = plot_df["classification"].str.strip().str.lower()
-
-        # Plot and display
-        fig = sns.pairplot(
-            plot_df,
-            hue="classification",
-            palette={"ckd": "#1f77b4", "notckd": "#ff7f0e"},
-            diag_kind="kde",
-            corner=True,
-            plot_kws={"alpha": 0.6, "s": 30}
-        )
-        st.pyplot(fig)
-    else:
-        st.warning("Les colonnes nécessaires pour le pairplot ne sont pas toutes disponibles.")
-        
 # ╭──────────────────────────────────────────╮
-# │ 4. TABS VISU                            │
+# │ 4. PairPlot                              │
+# ╰──────────────────────────────────────────╯
+with st.expander("🔍 PairPlot (seaborn)"):
+    sel = ["age", "bp", "sc", "hemo", "bgr", "classification"]
+    if all(c in df.columns for c in sel):
+        pp_df = df[sel].copy()
+        pp_df["classification"] = pp_df["classification"].str.strip().str.lower()
+        fig_pp = sns.pairplot(pp_df, hue="classification",
+                              palette=COLORS, diag_kind="kde",
+                              corner=True, plot_kws={"alpha": .6, "s": 30})
+        st.pyplot(fig_pp)
+    else:
+        st.warning("Variables nécessaires absentes pour le pairplot.")
+
+# ╭──────────────────────────────────────────╮
+# │ 5. Tabs de visualisation                 │
 # ╰──────────────────────────────────────────╯
 tab_grid, tab_na, tab_hist, tab_box, tab_corr, tab_pca = st.tabs(
     ["🗒️ Aperçu", "📉 Manquants", "📊 Histogrammes", "📦 Box-plots",
      "🔗 Corrélation", "🌀 PCA"]
 )
 
-# 4-A  Aperçu Ag-Grid
+# 5-A  Ag-Grid
 with tab_grid:
     gb = GridOptionsBuilder.from_dataframe(df.head(500))
     gb.configure_pagination(paginationPageSize=20)
     gb.configure_default_column(resizable=True, sortable=True, filter=True)
     AgGrid(df, gridOptions=gb.build(), height=350, theme="streamlit")
 
-# 4-B  Heatmap NA
+# 5-B  Valeurs manquantes
 with tab_na:
-    st.subheader("📉 Valeurs manquantes – visualisation")
-
-    missing_counts = raw_df.isnull().sum()
-    missing_counts = missing_counts[missing_counts > 0].sort_values(ascending=True)
-
-    if not missing_counts.empty:
-        fig_missing = px.bar(
-            x=missing_counts.values,
-            y=missing_counts.index,
-            orientation='h',
-            title="Nombre de valeurs manquantes par colonne",
-            labels={"x": "Nombre de valeurs manquantes", "y": "Colonnes"},
-            text=missing_counts.values,
-            color=missing_counts.values,
-            color_continuous_scale="Reds"
-        )
-        fig_missing.update_layout(height=600)
-        st.plotly_chart(fig_missing, use_container_width=True)
-
-        # Optional: Add a summary table below
-        st.dataframe(missing_counts.to_frame(name="NAs").sort_values("NAs", ascending=False))
+    st.subheader("📉 Valeurs manquantes & co-manquance")
+    miss = raw_df.isna().sum()
+    miss = miss[miss > 0].sort_values()
+    if miss.empty:
+        st.success("✅ Aucune valeur manquante.")
     else:
-        st.success("✅ Aucune valeur manquante détectée.")
+        st.plotly_chart(
+            px.bar(x=miss.values, y=miss.index, orientation="h",
+                   title="Nombre de NA par colonne",
+                   labels={"x": "NAs", "y": "Colonnes"},
+                   color=miss.values, color_continuous_scale="Reds"),
+            use_container_width=True
+        )
+        # heat-map co-manquance
+        na_corr = raw_df.isna().astype(int).corr()
+        st.plotly_chart(
+            px.imshow(na_corr, zmin=0, zmax=1, aspect="auto",
+                      color_continuous_scale="Purples",
+                      labels=dict(color="Corr NA"),
+                      title="Corrélations des indicateurs de NA"),
+            use_container_width=True
+        )
+        st.dataframe(miss.to_frame("NAs").sort_values("NAs", ascending=False))
 
-
-# 4-C  Histogrammes + KDE (grille 4 colonnes)
+# 5-C  Histogrammes conditionnels
 with tab_hist:
-    st.subheader("📊 Histogrammes + KDE")
-    st.write("Visualisation des distributions des variables numériques pour détecter asymétrie, outliers et tendances.")
-
-    # ✅ Define numeric columns here
-    num_cols = df.select_dtypes(include=["float64", "int64", "int32"]).columns.tolist()
-
-    if not num_cols:
-        st.info("Aucune variable numérique à afficher.")
+    st.subheader("📊 Histogrammes + KDE par classe")
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if num_cols:
+        per_row = 4
+        for i, col in enumerate(num_cols):
+            if i % per_row == 0:
+                cols = st.columns(per_row)
+            with cols[i % per_row]:
+                fig, ax = plt.subplots(figsize=(4, 3))
+                sns.histplot(df, x=col,
+                             hue="classification" if "classification" in df.columns else None,
+                             kde=True, palette=COLORS,
+                             edgecolor="black", alpha=.75, ax=ax)
+                ax.set_title(col, fontsize=9)
+                ax.set_xlabel(""); ax.set_ylabel("")
+                st.pyplot(fig)
     else:
-        cols_per_row = 4
-        total = len(num_cols)
+        st.info("Pas de variables numériques.")
 
-        for i in range(0, total, cols_per_row):
-            cols = st.columns(cols_per_row)
-            for j in range(cols_per_row):
-                if i + j < total:
-                    col = num_cols[i + j]
-                    with cols[j]:
-                        fig, ax = plt.subplots(figsize=(4, 3))
-                        sns.histplot(df[col].dropna(), kde=True, ax=ax,
-                                     color="steelblue", edgecolor="black")
-                        ax.set_title(f"{col}", fontsize=10)
-                        ax.set_xlabel("")
-                        ax.set_ylabel("")
-                        ax.tick_params(axis='both', labelsize=8)
-                        st.pyplot(fig)
-                        
-# 4-D  Box-plots (grille 4 colonnes)
+# 5-D  Box-plots + % > P99
 with tab_box:
-    st.subheader("📦 Box-plots (détection des valeurs aberrantes)")
-    if not num_cols:
-        st.info("Aucune variable numérique.")
-    else:
-        cols_per_row = 4
-        rows_grid = (len(num_cols) + cols_per_row - 1) // cols_per_row
-
-        fig_box = make_subplots(
-            rows=rows_grid, cols=cols_per_row,
-            subplot_titles=[f"{col}" for col in num_cols],
-            horizontal_spacing=0.06,
-            vertical_spacing=0.14
-        )
-
-        r, c = 1, 1
+    st.subheader("📦 Box-plots + quantification des outliers")
+    if num_cols:
+        per_row = 4
+        rows_grid = (len(num_cols) + per_row - 1) // per_row
+        fig_box = make_subplots(rows=rows_grid, cols=per_row,
+                                subplot_titles=num_cols,
+                                horizontal_spacing=0.06,
+                                vertical_spacing=0.14)
+        r = c = 1
         for col in num_cols:
             fig_box.add_trace(
-                go.Box(
-                    x=df[col],
-                    name=col,
-                    boxpoints="outliers",
-                    marker=dict(color="#2ca02c", opacity=0.6),
-                    line=dict(color="#2ca02c"),
-                    orientation="h",
-                    showlegend=False,
-                    hovertemplate=f"<b>{col}</b><br>Valeur: %{{x}}<extra></extra>"
-                ),
-                row=r, col=c
-            )
-
+                go.Box(x=df[col], boxpoints="outliers", orientation="h",
+                       marker=dict(color="#2ca02c", opacity=0.6),
+                       line=dict(color="#2ca02c"),
+                       showlegend=False), row=r, col=c)
             c += 1
-            if c > cols_per_row:
-                c = 1
-                r += 1
-
-        fig_box.update_layout(
-            height=280 * rows_grid,
-            template="plotly_white",
-            title_text="Distribution des variables numériques avec détection des outliers",
-            margin=dict(t=50, b=30),
-        )
-        fig_box.update_xaxes(title_text="Valeurs")
-        fig_box.update_yaxes(showticklabels=False)
-
+            if c > per_row:
+                c = 1; r += 1
+        fig_box.update_layout(height=280*rows_grid,
+                              template="plotly_white",
+                              title="Distribution des variables numériques")
         st.plotly_chart(fig_box, use_container_width=True)
-        st.caption("Les points en dehors des boîtes représentent des valeurs potentiellement aberrantes (outliers).")
 
+        pct_out = (df[num_cols] > df[num_cols].quantile(0.99)).mean()*100
+        st.caption("**% de valeurs > P99**")
+        st.dataframe(pct_out.round(2).to_frame("% > P99"))
+    else:
+        st.info("Pas de variables numériques.")
 
-# 4-E  Corrélation
+# 5-E  Corrélation
 with tab_corr:
-    st.subheader("🔗 Matrice de corrélation")
+    st.subheader("🔗 Corrélation Pearson")
     if len(num_cols) >= 2:
         corr = df[num_cols].corr().round(2)
-
-        fig_corr = px.imshow(
-            corr,
-            text_auto=True,  # show values in cells
-            aspect="auto",
-            color_continuous_scale="RdBu",
-            zmin=-1, zmax=1,
-            labels=dict(color="Corrélation")
+        st.plotly_chart(
+            px.imshow(corr, text_auto=True, aspect="auto",
+                      color_continuous_scale="RdBu", zmin=-1, zmax=1,
+                      labels=dict(color="Corrélation"),
+                      title="Matrice de corrélation (numérique)"),
+            use_container_width=True
         )
-        fig_corr.update_layout(
-            title="Corrélations entre les variables numériques",
-            height=600,
-            margin=dict(t=50, l=10, r=10, b=40)
-        )
-        st.plotly_chart(fig_corr, use_container_width=True)
-
-        st.caption("Corrélation de Pearson : -1 (négative) à +1 (positive). Les valeurs diagonales sont toujours 1.")
     else:
-        st.info("Pas assez de variables numériques pour afficher une matrice de corrélation.")
+        st.info("Pas assez de variables numériques.")
 
-
-# 4-F  PCA 2D
+# 5-F  PCA (imputation moyenne rapide)
 with tab_pca:
-    st.subheader("🌀 Projection PCA (2 composantes)")
+    st.subheader("🌀 PCA (2 composantes)")
     if len(num_cols) < 2:
         st.info("Au moins deux variables numériques requises.")
     else:
-        # Normalize before PCA
-        from sklearn.preprocessing import StandardScaler
-        X_scaled = StandardScaler().fit_transform(df[num_cols])
-
-        # Apply PCA
-        pca = PCA(n_components=2)
-        comps = pca.fit_transform(X_scaled)
+        X_num = SimpleImputer(strategy="mean").fit_transform(df[num_cols])
+        X_scaled = StandardScaler().fit_transform(X_num)
+        comps = PCA(n_components=2).fit_transform(X_scaled)
         pca_df = pd.DataFrame(comps, columns=["PC1", "PC2"])
-        
-        # Add target/classification color if available
         if "classification" in df.columns:
-            pca_df["Class"] = df["classification"].str.strip().str.lower()
-            fig_pca = px.scatter(
-                pca_df, x="PC1", y="PC2",
-                color="Class",
-                color_discrete_map={"ckd": "#1f77b4", "notckd": "#ff7f0e"},
-                opacity=0.7,
-                title="Projection PCA (2 composantes principales)",
-                labels={"PC1": "Composante Principale 1", "PC2": "Composante Principale 2"}
-            )
+            pca_df["Class"] = df["classification"]
+            fig_pca = px.scatter(pca_df, x="PC1", y="PC2",
+                                 color="Class", color_discrete_map=COLORS,
+                                 opacity=.75,
+                                 title="Projection PCA (2 composantes)")
         else:
-            fig_pca = px.scatter(
-                pca_df, x="PC1", y="PC2",
-                opacity=0.7,
-                title="Projection PCA (2 composantes principales)"
-            )
-
-        fig_pca.update_layout(height=600)
+            fig_pca = px.scatter(pca_df, x="PC1", y="PC2",
+                                 opacity=.75, title="Projection PCA")
         st.plotly_chart(fig_pca, use_container_width=True)
-
-        # Explained variance
-        st.caption(
-            f"🧮 La Composante 1 explique **{pca.explained_variance_ratio_[0]*100:.2f}%** de la variance, "
-            f"et la Composante 2 **{pca.explained_variance_ratio_[1]*100:.2f}%**."
-        )
-
-
-
 
 footer.render()
