@@ -1,172 +1,157 @@
 # ─────────────────────────────────────────────
-# 03_Modelisation.py — entraînement & comparaison
+# 03_Modelisation.py — v3 CKD-ready
 # ─────────────────────────────────────────────
 import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
+import pandas as pd, numpy as np
 from pathlib import Path
+import joblib, shap, warnings, datetime
 
-from sklearn.model_selection import (
-    train_test_split, StratifiedKFold, cross_validate, RandomizedSearchCV
-)
-from sklearn.metrics import (
-    confusion_matrix, ConfusionMatrixDisplay,
-    RocCurveDisplay, PrecisionRecallDisplay
-)
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
+from sklearn.model_selection import (train_test_split, StratifiedKFold,
+                                     cross_validate, RandomizedSearchCV)
+from sklearn.metrics import (confusion_matrix, ConfusionMatrixDisplay,
+                             RocCurveDisplay, PrecisionRecallDisplay,
+                             roc_auc_score, precision_recall_curve)
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.dummy import DummyClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from lightgbm import LGBMClassifier
 
-import seaborn as sns
 import matplotlib.pyplot as plt
+import seaborn as sns
 
-# ╭────────── CONFIG STREAMLIT ──────────╮
+warnings.filterwarnings("ignore")
+
+# ╭────────── CONFIG ──────────╮
 st.set_page_config(page_title="🤖 Modélisation", page_icon="🧠", layout="wide")
-st.title("🤖 Étape 3 – Entraînement, Évaluation et Comparaison des Modèles")
+st.title("🤖 Étape 3 – Modélisation CKD (v3)")
 
-# ╭────────── CONTRÔLE PRÉ-REQUIS ───────╮
+# ╭────────── DATA CHECK ──────╮
 if "cleaned_df" not in st.session_state:
-    st.warning("Exécutez d’abord la page « Pré-traitement ». 🚩")
+    st.warning("Passez d’abord par « Pré-traitement ».")
     st.stop()
 
 df = st.session_state.cleaned_df.copy()
+y = df.pop("classification")
+X = df
 
-target = "classification"
-if target not in df.columns:
-    st.error("La colonne cible 'classification' est manquante.")
-    st.stop()
-
-# ╭────────── SPLIT TRAIN / TEST ─────────╮
-st.subheader("📦 Séparation Train / Test")
-test_size = st.slider("Taille du test (%)", 10, 40, 20, 5) / 100
-X = df.drop(columns=[target])
-y = df[target]
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, stratify=y, test_size=test_size, random_state=42
+# ╭────────── HOLD-OUT FINAL ──╮
+st.subheader("📦 Split *external* test (20 %)")
+X_dev, X_hold, y_dev, y_hold = train_test_split(
+    X, y, stratify=y, test_size=0.20, random_state=42
 )
-st.write(f"Shape X_train : {X_train.shape}  •  Shape X_test : {X_test.shape}")
-st.write("Répartition cible (train) :", pd.Series(y_train)
-         .value_counts(normalize=True).round(2))
+st.write("Hold-out conservé pour la fin : ", X_hold.shape)
 
-# ╭────────── PRÉ-PROCESSUS LOCAL (sans 'classification') ──╮
-num_cols = X.select_dtypes("number").columns.tolist()
-cat_cols = X.select_dtypes(exclude="number").columns.tolist()
-
-num_pipe = Pipeline([
-    ("imputer", SimpleImputer(strategy="median")),
-    ("scaler",  StandardScaler())
-])
-try:
-    ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-except TypeError:
-    ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
+# ╭────────── PREPROCESS PIPE ─╮
+num_cols = X_dev.select_dtypes("number").columns.tolist()
+cat_cols = X_dev.select_dtypes(exclude="number").columns.tolist()
 
 prep = ColumnTransformer([
-    ("num", num_pipe, num_cols),
-    ("cat", ohe,      cat_cols)
+    ("num", Pipeline([
+        ("imp", SimpleImputer(strategy="median")),
+        ("sc",  StandardScaler())
+    ]), num_cols),
+    ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat_cols)
 ])
 
-# ╭────────── DÉFINITION DES PIPELINES ────╮
+# ╭────────── MODEL LIST ──────╮
 models = {
-    "Random Forest": RandomForestClassifier(
-        n_estimators=300, class_weight="balanced", random_state=42),
-    "Logistic Regression": LogisticRegression(
-        max_iter=2000, class_weight="balanced", random_state=42, solver="lbfgs"),
-    "SVM": SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=42),
-    "KNN": KNeighborsClassifier(n_neighbors=5)
+    "Dummy": DummyClassifier(strategy="most_frequent"),
+    "Logistic R": LogisticRegression(max_iter=2000, class_weight="balanced", random_state=42),
+    "RandomForest": RandomForestClassifier(n_estimators=400, class_weight="balanced", random_state=42),
+    "SVM-RBF": SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=42),
+    "KNN": KNeighborsClassifier(n_neighbors=5),
+    "LightGBM": LGBMClassifier(
+        n_estimators=400, learning_rate=0.05,
+        class_weight="balanced", random_state=42
+    )
 }
-pipelines = {name: Pipeline([("prep", prep), ("clf", clf)])
-             for name, clf in models.items()}
+pipelines = {n: Pipeline([("prep", prep), ("clf", m)]) for n, m in models.items()}
 
 scoring = {
-    "accuracy": "accuracy",
-    "roc_auc": "roc_auc",
-    "precision": "precision",
-    "recall": "recall"
+    "ROC_AUC": "roc_auc",
+    "AP": "average_precision",   # PR-AUC
+    "RECALL": "recall",
+    "PREC": "precision"
 }
 
-# ╭────────── ENTRAÎNEMENT COMPARATIF ─────╮
-if st.button("🚀 Lancer la comparaison des modèles"):
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    results = {}
-    for name, pipe in pipelines.items():
-        scores = cross_validate(pipe, X_train, y_train,
-                                scoring=scoring, cv=skf, n_jobs=-1)
-        results[name] = {m.upper(): np.mean(scores[f"test_{m}"])
-                         for m in scoring}
-    res_df = pd.DataFrame(results).T.round(3)
+# ╭────────── CV COMPARISON ───╮
+if st.button("🚀 Comparer les modèles"):
+    cv   = StratifiedKFold(5, shuffle=True, random_state=42)
+    res  = {}
+    with st.spinner("Cross-validation…"):
+        for n, p in pipelines.items():
+            scr = cross_validate(p, X_dev, y_dev, scoring=scoring, cv=cv, n_jobs=-1)
+            res[n] = {k: np.mean(scr[f"test_{k}"]) for k in scoring}
+    res_df = pd.DataFrame(res).T.round(3).sort_values("ROC_AUC", ascending=False)
     st.dataframe(res_df)
 
-    # Heat-map
-    fig, ax = plt.subplots(figsize=(10, 4))
-    sns.heatmap(res_df.T, annot=True, cmap="Blues", ax=ax, linewidths=.5)
-    ax.set_title("Moyennes des métriques (CV 5-fold)")
+    # heatmap
+    fig, ax = plt.subplots(figsize=(9, 4))
+    sns.heatmap(res_df.T, annot=True, cmap="coolwarm", ax=ax, linewidths=.5)
+    ax.set_title("CV 5-fold – moyennes")
     st.pyplot(fig)
 
-    best_name = res_df["ROC_AUC"].idxmax()
-    st.info(f"🏆 Meilleur modèle initial : **{best_name}**")
+    best_name = res_df.index[0]
+    st.success(f"🏆 Sélection : **{best_name}**")
     best_pipe = pipelines[best_name]
 
-    # ╭────────── HYPERPARAMETERS SEARCH ─────╮
-    st.subheader("🔍 Recherche d’hyperparamètres (sur le meilleur)")
-    if best_name == "Random Forest":
-        param_grid = {
-            "clf__n_estimators": [200, 400, 600],
-            "clf__max_depth": [None, 5, 10, 20],
-            "clf__min_samples_split": [2, 5, 10]
-        }
-    elif best_name == "Logistic Regression":
-        param_grid = {"clf__C": [0.01, 0.1, 1, 10],
-                      "clf__penalty": ["l2"]}
-    else:
-        param_grid = {}
+    # ╭────────── Calibration ────╮
+    st.subheader("📏 Calibration isotone + fit full DEV")
+    calib = CalibratedClassifierCV(best_pipe, method="isotonic", cv=5)
+    calib.fit(X_dev, y_dev)
 
-    if param_grid:
-        search = RandomizedSearchCV(
-            best_pipe, param_grid, n_iter=10,
-            scoring="roc_auc", cv=skf, n_jobs=-1, random_state=42
-        )
-        with st.spinner("🔬 Recherche en cours…"):
-            search.fit(X_train, y_train)
-        best_pipe = search.best_estimator_
-        st.write("Meilleur AUC CV :", round(search.best_score_, 3))
-        st.write("Hyperparamètres :", search.best_params_)
+    # ╭────────── Threshold opt. ─╮
+    proba_dev = calib.predict_proba(X_dev)[:, 1]
+    prec, rec, th = precision_recall_curve(y_dev, proba_dev)
+    f1 = 2 * prec * rec / (prec + rec + 1e-8)
+    opt_thr = th[np.argmax(f1)]
+    st.write(f"Seuil F1‐max : **{opt_thr:.2f}** (F1={f1.max():.3f})")
 
-    # ╭────────── TRAIN FINAL + TEST SET ──────╮
-    best_pipe.fit(X_train, y_train)
-    st.session_state.best_model = best_pipe   # pour page suivante
+    # ╭────────── TEST FINAL ─────╮
+    st.subheader("🧪 Évaluation hold-out (jamais vu)")
+    proba_test = calib.predict_proba(X_hold)[:, 1]
+    y_pred = (proba_test >= opt_thr).astype(int)
 
-    y_pred  = best_pipe.predict(X_test)
-    y_proba = best_pipe.predict_proba(X_test)[:, 1]
-
-    st.subheader("🧾 Matrice de confusion")
-    cm = confusion_matrix(y_test, y_pred)
+    cm = confusion_matrix(y_hold, y_pred)
     fig_cm, ax_cm = plt.subplots()
     ConfusionMatrixDisplay(cm).plot(ax=ax_cm, colorbar=False)
     st.pyplot(fig_cm)
 
-    st.subheader("📈 Courbes ROC & PR")
-    fig_roc, ax_roc = plt.subplots()
-    RocCurveDisplay.from_predictions(y_test, y_proba, ax=ax_roc)
-    st.pyplot(fig_roc)
+    st.caption(
+        f"ROC-AUC : {roc_auc_score(y_hold, proba_test):.3f} | "
+        f"Precision-Recall AUC : {np.trapz(rec, prec):.3f}"
+    )
 
-    fig_pr, ax_pr = plt.subplots()
-    PrecisionRecallDisplay.from_predictions(y_test, y_proba, ax=ax_pr)
+    # ╭────────── ROC / PR CURVE ─╮
+    fig_roc, ax = plt.subplots()
+    RocCurveDisplay.from_predictions(y_hold, proba_test, ax=ax)
+    st.pyplot(fig_roc)
+    fig_pr, ax2 = plt.subplots()
+    PrecisionRecallDisplay.from_predictions(y_hold, proba_test, ax=ax2)
+    ax2.axhline(y_hold.mean(), ls="--", color="grey")  # baseline
     st.pyplot(fig_pr)
 
-    # ╭────────── TÉLÉCHARGEMENT DU MODELE ────╮
-    model_path = Path("best_model.joblib")
-    joblib.dump(best_pipe, model_path)
-    with open(model_path, "rb") as f:
-        st.download_button(
-            "💾 Télécharger le modèle (joblib)",
-            data=f,
-            file_name="best_model.joblib"
-        )
+    # ╭────────── SHAP GLOBAL ────╮
+    st.subheader("🔎 Interprétation SHAP (LightGBM / RF / LR)")
+    try:
+        expl = shap.Explainer(calib.base_estimator_["clf"])
+        shap_vals = expl(calib.base_estimator_["prep"].transform(X_hold))
+        fig_shap = shap.summary_plot(shap_vals, show=False, plot_size=(8, 4))
+        st.pyplot(bbox_inches='tight')
+    except Exception as e:
+        st.info(f"SHAP indisponible : {e}")
+
+    # ╭────────── EXPORT JOBLIB ──╮
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    path = Path(f"ckd_model_{ts}.joblib")
+    joblib.dump(calib, path)
+    with open(path, "rb") as f:
+        st.download_button("💾 Télécharger le modèle calibré",
+                           data=f, file_name=path.name, mime="application/octet-stream")
