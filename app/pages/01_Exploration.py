@@ -62,6 +62,7 @@ def load_and_clean(file):
     return raw, clean
 
 raw_df, df = load_and_clean(csv)
+st.session_state["raw_df"]    = raw_df.copy()
 
 # Normaliser la cible + convertir les colonnes numériques “texte”
 if "classification" in df.columns:

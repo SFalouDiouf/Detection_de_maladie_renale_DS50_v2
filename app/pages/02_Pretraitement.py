@@ -19,6 +19,8 @@ if "uploaded_df" not in st.session_state:
     st.stop()
 
 df_raw = st.session_state.uploaded_df.copy()
+if "raw_df" not in st.session_state:
+    st.session_state["raw_df"] = df_raw.copy()
 if "id" in df_raw.columns:
     df_raw.drop(columns=["id"], inplace=True)
 

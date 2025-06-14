@@ -25,18 +25,30 @@ from lightgbm                  import LGBMClassifier
 
 import matplotlib.pyplot as plt
 import seaborn as sns
+from app.pages.quick_clean import build_preprocessor
+import re  
 sns.set_style("whitegrid")          # rendu plus doux
 
 # ╭── CONFIG STREAMLIT ─────────────────────────────────────────╮
 st.set_page_config(page_title="🤖 Modélisation", page_icon="🧠", layout="wide")
 st.title("🤖 Étape 3 — Modélisation CKD (v3)")
 
-# ╭── CONTRÔLE DES DONNÉES ─────────────────────────────────────╮
-if "cleaned_df" not in st.session_state:
-    st.warning("Passez d’abord par la page « Pré-traitement ».")
+if "raw_df" not in st.session_state:
+    st.warning("Importez d’abord le CSV (pages « Exploration » ou "
+               "« Pré-traitement »).")
     st.stop()
-
-df = st.session_state.cleaned_df.copy()
+df = st.session_state.raw_df.copy()
+df["classification"] = (
+    df["classification"]
+      .astype(str)
+      .str.strip()
+      .str.lower()
+      .apply(lambda s: re.sub(r"\s+", "", s))
+      .replace({"ckd": 1, "notckd": 0})
+      .astype(int)
+)
+if "id" in df.columns:
+    df.drop(columns=["id"], inplace=True)
 y  = df.pop("classification")
 X  = df
 
@@ -49,16 +61,7 @@ X_dev, X_hold, y_dev, y_hold = train_test_split(
 st.write(f"Hold-out : {X_hold.shape}")
 
 # ╭── PIPELINE DE PRÉ-TRAITEMENT ───────────────────────────────╮
-num_cols = X_dev.select_dtypes("number").columns.tolist()
-cat_cols = X_dev.select_dtypes(exclude="number").columns.tolist()
-
-prep = ColumnTransformer([
-    ("num", Pipeline([
-        ("imp", SimpleImputer(strategy="median")),
-        ("sc",  StandardScaler())
-    ]), num_cols),
-    ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat_cols)
-])
+prep = build_preprocessor(X_dev) 
 
 # ╭── CANDIDATS MODÈLES ────────────────────────────────────────╮
 models = {
@@ -86,7 +89,9 @@ scoring = {"ROC_AUC": "roc_auc",
 
 # ╭── COMPARAISON PAR VALIDATION CROISÉE ───────────────────────╮
 if st.button("🚀 Comparer les modèles"):
-    cv = StratifiedKFold(5, shuffle=True, random_state=42)
+    min_per_class = y_dev.value_counts().min()
+    safe_cv = max(2, min(5, min_per_class))
+    cv = StratifiedKFold(n_splits=safe_cv, shuffle=True, random_state=42)
     res = {}
     with st.spinner("Cross-validation…"):
         for name, pipe in pipelines.items():
@@ -111,7 +116,7 @@ if st.button("🚀 Comparer les modèles"):
 
     # ╭── CALIBRATION & ENTRAÎNEMENT COMPLET DEV ───────────────╮
     st.subheader("📏 Calibration isotone + fit complet")
-    calib = CalibratedClassifierCV(best_pipe, method="isotonic", cv=5)
+    calib = CalibratedClassifierCV(best_pipe, method="isotonic", cv=safe_cv)
     calib.fit(X_dev, y_dev)
 
     # ╭── SEUIL OPTIMAL (F1) ───────────────────────────────────╮
