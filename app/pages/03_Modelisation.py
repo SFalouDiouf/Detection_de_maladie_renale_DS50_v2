@@ -25,7 +25,7 @@ from lightgbm                  import LGBMClassifier
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-from app.pages.quick_clean import build_preprocessor
+from app.quick_clean import build_preprocessor
 import re  
 sns.set_style("whitegrid")          # rendu plus doux
 
